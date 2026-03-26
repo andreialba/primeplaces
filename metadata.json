@@ -1,0 +1,5 @@
+{
+  "name": "Prime Places",
+  "description": "Discover the most popular places from Google Maps data. Filter by location, sort by reviews, and find the best spots with AI-powered recommendations.",
+  "requestFramePermissions": []
+}
