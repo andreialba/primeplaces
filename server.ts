@@ -6,6 +6,8 @@ import { GoogleGenAI, Type } from '@google/genai';
 import Database from 'better-sqlite3';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import helmet from 'helmet';
+import cors from 'cors';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,7 +15,13 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+app.use(helmet());
+app.use(cors({
+  origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000', 'http://localhost:5173'],
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type'],
+}));
+app.use(express.json({ limit: '10kb' }));
 
 // Initialize SQLite for persistent caching
 const db = new Database('cache.db');
@@ -75,7 +83,7 @@ const placesCache = new LRUCache<string, any>({
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', env: process.env });
+  res.json({ status: 'ok' });
 });
 
 app.get('/api/trending', (req, res) => {
@@ -102,9 +110,10 @@ app.get('/api/trending', (req, res) => {
 app.get('/api/autocomplete', async (req, res) => {
   try {
     const { q, sessiontoken } = req.query;
-    if (!q || (q as string).length < 3) return res.json({ predictions: [] });
-    
-    const cacheKey = `autocomplete-${q}`;
+    const query = (q as string) || '';
+    if (query.length < 3 || query.length > 200) return res.json({ predictions: [] });
+
+    const cacheKey = `autocomplete-${query}`;
     const cached = getCache(cacheKey);
     if (cached) return res.json({ predictions: cached });
 
@@ -112,9 +121,9 @@ app.get('/api/autocomplete', async (req, res) => {
       return res.status(500).json({ error: 'GOOGLE_MAPS_API_KEY is not configured' });
     }
 
-    let url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(q as string)}&types=geocode&key=${process.env.GOOGLE_MAPS_API_KEY}`;
-    if (sessiontoken) {
-      url += `&sessiontoken=${sessiontoken}`;
+    let url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(query)}&types=geocode&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+    if (sessiontoken && /^[a-zA-Z0-9\-._~]+$/.test(sessiontoken as string)) {
+      url += `&sessiontoken=${encodeURIComponent(sessiontoken as string)}`;
     }
 
     const response = await axios.get(url);
@@ -188,7 +197,14 @@ app.get('/api/location-photo/:location', async (req, res) => {
 app.post('/api/places', async (req, res) => {
   try {
     const { location, type, typeId, minRating, minReviews, sortBy, radius } = req.body;
-    
+
+    if (!location || typeof location !== 'string' || location.length > 200) {
+      return res.status(400).json({ error: 'Invalid location' });
+    }
+    if (radius !== undefined && (typeof radius !== 'number' || radius < 0 || radius > 500)) {
+      return res.status(400).json({ error: 'Invalid radius' });
+    }
+
     if (!process.env.GOOGLE_MAPS_API_KEY) {
       return res.status(500).json({ error: 'GOOGLE_MAPS_API_KEY is not configured' });
     }
@@ -378,7 +394,10 @@ app.post('/api/ai/summary', async (req, res) => {
       return res.status(400).json({ error: 'Invalid API key. Please set a valid GEMINI_API_KEY in your .env file.' });
     }
 
-    const { placeName, location, type } = req.body;
+    const placeName = (typeof req.body.placeName === 'string' ? req.body.placeName : '').substring(0, 200);
+    const location = (typeof req.body.location === 'string' ? req.body.location : '').substring(0, 200);
+    const type = (typeof req.body.type === 'string' ? req.body.type : '').substring(0, 100);
+    if (!placeName || !location) return res.status(400).json({ error: 'Missing placeName or location' });
     const cacheKey = `ai-summary-v3-${placeName}-${location}-${type}`;
     const cached = getCache(cacheKey);
     if (cached) return res.json({ summary: cached });
@@ -446,7 +465,8 @@ app.post('/api/ai/chat', async (req, res) => {
     }
 
     const ai = new GoogleGenAI({ apiKey });
-    const { message } = req.body;
+    const message = (typeof req.body.message === 'string' ? req.body.message : '').substring(0, 2000);
+    if (!message) return res.status(400).json({ error: 'Missing message' });
     
     const chat = ai.chats.create({
       model: 'gemini-3-flash-preview',
@@ -475,7 +495,9 @@ app.post('/api/ai/image', async (req, res) => {
       return res.status(400).json({ error: 'Invalid API key. Please set a valid GEMINI_API_KEY in your .env file.' });
     }
 
-    const { prompt, size } = req.body;
+    const prompt = (typeof req.body.prompt === 'string' ? req.body.prompt : '').substring(0, 500);
+    const size = req.body.size;
+    if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
     const cacheKey = `ai-image-${prompt}-${size || '1K'}`;
     const cached = getCache(cacheKey);
     if (cached) return res.json({ imageUrl: cached });
