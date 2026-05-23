@@ -298,7 +298,7 @@ export default function PlaceDrawer({ place, isOpen, onClose, location, type }: 
                   {place.location && (
                     <div className="w-full h-32 bg-neutral-100 rounded-xl overflow-hidden border border-neutral-200 relative">
                       <img 
-                        src={`https://maps.googleapis.com/maps/api/staticmap?center=${place.location.latitude},${place.location.longitude}&zoom=15&size=600x300&markers=color:red%7C${place.location.latitude},${place.location.longitude}&key=${import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''}`}
+                        src={`/api/static-map?centerLat=${place.location.latitude}&centerLng=${place.location.longitude}&zoom=15&width=600&height=300&scale=2`}
                         alt="Map location"
                         className="w-full h-full object-cover"
                         onError={(e) => {

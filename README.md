@@ -11,21 +11,21 @@ Discover the most popular places from Google Maps data. Filter by location, sort
 
 This app uses the following Google APIs:
 
-1. **Google Maps API** - For map rendering and geocoding
+1. **Google Maps Platform** - For geocoding, place search, photos, and server-rendered static maps
 2. **Google Places API** - For place search, details, and photos
-3. **Google Gemini API** - For AI-powered chatbot and image generation
+3. **Google Gemini API** - For AI-powered place insights
 
 ### Getting API Keys
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create a new project or select an existing one
 3. Enable the following APIs:
-   - Maps JavaScript API
    - Places API
    - Geocoding API
+   - Maps Static API
    - Gemini API
-4. Create API keys for each service
-5. Restrict the keys to your domain for security (optional but recommended)
+4. Create a single server-side Google API key and keep it private on the server
+5. Restrict the Google key by API and server environment as tightly as possible
 
 ## Setup
 
@@ -43,9 +43,10 @@ This app uses the following Google APIs:
 3. Create a `.env` file in the root directory and add your API keys:
    ```env
    GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
-   VITE_GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
    GEMINI_API_KEY=your_gemini_api_key_here
    ```
+
+All keys are server-only. This app does not expose Google or Gemini keys to the browser.
 
 4. Start the development server:
    ```bash

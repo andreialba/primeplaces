@@ -82,8 +82,96 @@ const placesCache = new LRUCache<string, any>({
   ttl: 1000 * 60 * 60 * 24, // 24 hours in-memory
 });
 
+function getGoogleApiKey() {
+  return process.env.GOOGLE_MAPS_API_KEY;
+}
+
+function getGeminiApiKey() {
+  const apiKey = process.env.CUSTOM_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY' || apiKey === 'YOUR_GEMINI_API_KEY') {
+    return null;
+  }
+  return apiKey;
+}
+
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
+});
+
+app.get('/api/static-map', async (req, res) => {
+  try {
+    const apiKey = getGoogleApiKey();
+    if (!apiKey) {
+      return res.status(500).json({ error: 'GOOGLE_MAPS_API_KEY is not configured' });
+    }
+
+    const centerLat = Number(req.query.centerLat);
+    const centerLng = Number(req.query.centerLng);
+    const zoom = Math.min(Math.max(Number(req.query.zoom) || 13, 1), 20);
+    const width = Math.min(Math.max(Number(req.query.width) || 1200, 100), 1280);
+    const height = Math.min(Math.max(Number(req.query.height) || 700, 100), 1280);
+    const scale = Math.min(Math.max(Number(req.query.scale) || 2, 1), 2);
+
+    if (!Number.isFinite(centerLat) || !Number.isFinite(centerLng)) {
+      return res.status(400).json({ error: 'Invalid center coordinates' });
+    }
+
+    let markers: Array<{ lat: number; lng: number; label?: string }> = [];
+    if (typeof req.query.markers === 'string') {
+      try {
+        const parsed = JSON.parse(req.query.markers);
+        if (Array.isArray(parsed)) {
+          markers = parsed
+            .slice(0, 20)
+            .filter((marker) =>
+              marker &&
+              Number.isFinite(Number(marker.lat)) &&
+              Number.isFinite(Number(marker.lng))
+            )
+            .map((marker) => ({
+              lat: Number(marker.lat),
+              lng: Number(marker.lng),
+              label: typeof marker.label === 'string' ? marker.label.slice(0, 1) : undefined,
+            }));
+        }
+      } catch {
+        return res.status(400).json({ error: 'Invalid markers payload' });
+      }
+    }
+
+    const params = new URLSearchParams({
+      center: `${centerLat},${centerLng}`,
+      zoom: String(zoom),
+      size: `${width}x${height}`,
+      scale: String(scale),
+      maptype: 'roadmap',
+      key: apiKey,
+      style: 'feature:poi|visibility:off',
+    });
+
+    if (markers.length > 0) {
+      for (const marker of markers) {
+        const label = marker.label ? `|label:${marker.label}` : '';
+        params.append('markers', `color:red${label}|${marker.lat},${marker.lng}`);
+      }
+    } else {
+      params.append('markers', `color:red|${centerLat},${centerLng}`);
+    }
+
+    const response = await axios.get(`https://maps.googleapis.com/maps/api/staticmap?${params.toString()}`, {
+      responseType: 'arraybuffer',
+    });
+
+    const contentType = typeof response.headers['content-type'] === 'string'
+      ? response.headers['content-type']
+      : 'image/png';
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(response.data);
+  } catch (error: any) {
+    console.error('Static map error:', error.response?.data || error.message);
+    res.status(500).json({ error: 'Failed to render static map' });
+  }
 });
 
 app.get('/api/trending', (req, res) => {
@@ -117,11 +205,11 @@ app.get('/api/autocomplete', async (req, res) => {
     const cached = getCache(cacheKey);
     if (cached) return res.json({ predictions: cached });
 
-    if (!process.env.GOOGLE_MAPS_API_KEY) {
+    if (!getGoogleApiKey()) {
       return res.status(500).json({ error: 'GOOGLE_MAPS_API_KEY is not configured' });
     }
 
-    let url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(query)}&types=geocode&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+    let url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(query)}&types=geocode&key=${getGoogleApiKey()}`;
     if (sessiontoken && /^[a-zA-Z0-9\-._~]+$/.test(sessiontoken as string)) {
       url += `&sessiontoken=${encodeURIComponent(sessiontoken as string)}`;
     }
@@ -140,11 +228,11 @@ app.get('/api/autocomplete', async (req, res) => {
 app.get('/api/photo/*', async (req, res) => {
   try {
     const photoName = req.params[0];
-    if (!photoName || !process.env.GOOGLE_MAPS_API_KEY) {
+    if (!photoName || !getGoogleApiKey()) {
       return res.redirect('https://picsum.photos/400/300');
     }
     
-    const url = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=800&maxWidthPx=800&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+    const url = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=800&maxWidthPx=800&key=${getGoogleApiKey()}`;
     res.redirect(url);
   } catch (error) {
     res.redirect('https://picsum.photos/400/300');
@@ -154,7 +242,7 @@ app.get('/api/photo/*', async (req, res) => {
 app.get('/api/location-photo/:location', async (req, res) => {
   try {
     const { location } = req.params;
-    if (!process.env.GOOGLE_MAPS_API_KEY) {
+    if (!getGoogleApiKey()) {
       return res.redirect(`https://picsum.photos/seed/${location}/800/600`);
     }
 
@@ -171,7 +259,7 @@ app.get('/api/location-photo/:location', async (req, res) => {
         {
           headers: {
             'Content-Type': 'application/json',
-            'X-Goog-Api-Key': process.env.GOOGLE_MAPS_API_KEY,
+            'X-Goog-Api-Key': getGoogleApiKey(),
             'X-Goog-FieldMask': 'places.photos',
           },
         }
@@ -179,7 +267,7 @@ app.get('/api/location-photo/:location', async (req, res) => {
 
       const photoName = response.data.places?.[0]?.photos?.[0]?.name;
       if (photoName) {
-        photoUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=800&maxWidthPx=800&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+        photoUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=800&maxWidthPx=800&key=${getGoogleApiKey()}`;
         // Cache location photos for 30 days as they rarely change
         setCache(cacheKey, photoUrl, 1000 * 60 * 60 * 24 * 30);
       } else {
@@ -205,7 +293,7 @@ app.post('/api/places', async (req, res) => {
       return res.status(400).json({ error: 'Invalid radius' });
     }
 
-    if (!process.env.GOOGLE_MAPS_API_KEY) {
+    if (!getGoogleApiKey()) {
       return res.status(500).json({ error: 'GOOGLE_MAPS_API_KEY is not configured' });
     }
 
@@ -217,7 +305,7 @@ app.post('/api/places', async (req, res) => {
 
     if (!geocodeData) {
       const geocodeRes = await axios.get(
-        `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(location)}&key=${process.env.GOOGLE_MAPS_API_KEY}`
+        `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(location)}&key=${getGoogleApiKey()}`
       );
       
       if (geocodeRes.data.results && geocodeRes.data.results.length > 0) {
@@ -284,7 +372,7 @@ app.post('/api/places', async (req, res) => {
             {
               headers: {
                 'Content-Type': 'application/json',
-                'X-Goog-Api-Key': process.env.GOOGLE_MAPS_API_KEY,
+                'X-Goog-Api-Key': getGoogleApiKey(),
                 'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.types,places.priceLevel,places.photos,places.location',
               },
             }
@@ -343,7 +431,7 @@ app.post('/api/places', async (req, res) => {
           {
             headers: {
               'Content-Type': 'application/json',
-              'X-Goog-Api-Key': process.env.GOOGLE_MAPS_API_KEY,
+              'X-Goog-Api-Key': getGoogleApiKey(),
               'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.types,places.priceLevel,places.photos,places.location',
             },
           }
@@ -389,9 +477,9 @@ app.post('/api/places', async (req, res) => {
 // AI Summary Endpoint (Fast AI responses)
 app.post('/api/ai/summary', async (req, res) => {
   try {
-    const apiKey = process.env.CUSTOM_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
-    if (apiKey === 'MY_GEMINI_API_KEY' || apiKey === 'YOUR_GEMINI_API_KEY') {
-      return res.status(400).json({ error: 'Invalid API key. Please set a valid GEMINI_API_KEY in your .env file.' });
+    const apiKey = getGeminiApiKey();
+    if (!apiKey) {
+      return res.status(400).json({ error: 'GEMINI_API_KEY is not configured. Add one to enable AI summaries.' });
     }
 
     const placeName = (typeof req.body.placeName === 'string' ? req.body.placeName : '').substring(0, 200);
@@ -459,9 +547,9 @@ app.post('/api/ai/summary', async (req, res) => {
 // AI Chatbot Endpoint
 app.post('/api/ai/chat', async (req, res) => {
   try {
-    const apiKey = process.env.CUSTOM_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
-    if (apiKey === 'MY_GEMINI_API_KEY' || apiKey === 'YOUR_GEMINI_API_KEY') {
-      return res.status(400).json({ error: 'Invalid API key. Please set a valid GEMINI_API_KEY in your .env file.' });
+    const apiKey = getGeminiApiKey();
+    if (!apiKey) {
+      return res.status(400).json({ error: 'GEMINI_API_KEY is not configured. Add one to enable the AI assistant.' });
     }
 
     const ai = new GoogleGenAI({ apiKey });
@@ -490,9 +578,9 @@ app.post('/api/ai/chat', async (req, res) => {
 // Image Generation Endpoint
 app.post('/api/ai/image', async (req, res) => {
   try {
-    const apiKey = process.env.CUSTOM_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
-    if (apiKey === 'MY_GEMINI_API_KEY' || apiKey === 'YOUR_GEMINI_API_KEY') {
-      return res.status(400).json({ error: 'Invalid API key. Please set a valid GEMINI_API_KEY in your .env file.' });
+    const apiKey = getGeminiApiKey();
+    if (!apiKey) {
+      return res.status(400).json({ error: 'GEMINI_API_KEY is not configured. Add one to enable image generation.' });
     }
 
     const prompt = (typeof req.body.prompt === 'string' ? req.body.prompt : '').substring(0, 500);
@@ -502,7 +590,7 @@ app.post('/api/ai/image', async (req, res) => {
     const cached = getCache(cacheKey);
     if (cached) return res.json({ imageUrl: cached });
 
-    const ai = new GoogleGenAI({ apiKey: process.env.CUSTOM_GEMINI_API_KEY || process.env.API_KEY || process.env.GEMINI_API_KEY });
+    const ai = new GoogleGenAI({ apiKey });
     
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
