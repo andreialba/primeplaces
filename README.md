@@ -26,6 +26,7 @@ This app uses the following Google APIs:
    - Gemini API
 4. Create a single server-side Google API key and keep it private on the server
 5. Restrict the Google key by API and server environment as tightly as possible
+6. Set `ALLOWED_ORIGINS` in production if your frontend is served from a different origin than the API server
 
 ## Setup
 
@@ -44,6 +45,7 @@ This app uses the following Google APIs:
    ```env
    GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
    GEMINI_API_KEY=your_gemini_api_key_here
+   ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
    ```
 
 All keys are server-only. This app does not expose Google or Gemini keys to the browser.
@@ -58,6 +60,7 @@ All keys are server-only. This app does not expose Google or Gemini keys to the 
 ## Available Scripts
 
 - `npm run dev` - Start the development server
+- `npm start` - Start the production server with the built frontend
 - `npm run build` - Build the app for production
 - `npm run preview` - Preview the production build
 - `npm run lint` - Run TypeScript type checking

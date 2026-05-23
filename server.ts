@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import axios from 'axios';
@@ -8,13 +9,17 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import helmet from 'helmet';
 import cors from 'cors';
+import type { NextFunction, Request, Response } from 'express';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const distPath = path.join(__dirname, 'dist');
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const isProduction = process.env.NODE_ENV === 'production';
+
+app.set('trust proxy', 1);
 
 app.use(helmet({
   contentSecurityPolicy: isProduction
@@ -102,6 +107,30 @@ const placesCache = new LRUCache<string, any>({
   ttl: 1000 * 60 * 60 * 24, // 24 hours in-memory
 });
 
+const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
+
+function createRateLimiter(maxRequests: number, windowMs: number) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const key = `${req.ip || 'unknown'}:${req.path}`;
+    const now = Date.now();
+    const record = rateLimitStore.get(key);
+
+    if (!record || now > record.resetAt) {
+      rateLimitStore.set(key, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+
+    if (record.count >= maxRequests) {
+      const retryAfterSeconds = Math.ceil((record.resetAt - now) / 1000);
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+      return res.status(429).json({ error: 'Too many requests. Please try again shortly.' });
+    }
+
+    record.count += 1;
+    next();
+  };
+}
+
 function getGoogleApiKey() {
   return process.env.GOOGLE_MAPS_API_KEY;
 }
@@ -117,6 +146,16 @@ function getGeminiApiKey() {
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
+
+const autocompleteLimiter = createRateLimiter(60, 60 * 1000);
+const staticMapLimiter = createRateLimiter(90, 60 * 1000);
+const placesLimiter = createRateLimiter(20, 60 * 1000);
+const aiSummaryLimiter = createRateLimiter(15, 60 * 1000);
+
+app.use('/api/autocomplete', autocompleteLimiter);
+app.use('/api/static-map', staticMapLimiter);
+app.use('/api/places', placesLimiter);
+app.use('/api/ai/summary', aiSummaryLimiter);
 
 app.get('/api/static-map', async (req, res) => {
   try {
@@ -564,88 +603,6 @@ app.post('/api/ai/summary', async (req, res) => {
   }
 });
 
-// AI Chatbot Endpoint
-app.post('/api/ai/chat', async (req, res) => {
-  try {
-    const apiKey = getGeminiApiKey();
-    if (!apiKey) {
-      return res.status(400).json({ error: 'GEMINI_API_KEY is not configured. Add one to enable the AI assistant.' });
-    }
-
-    const ai = new GoogleGenAI({ apiKey });
-    const message = (typeof req.body.message === 'string' ? req.body.message : '').substring(0, 2000);
-    if (!message) return res.status(400).json({ error: 'Missing message' });
-    
-    const chat = ai.chats.create({
-      model: 'gemini-3-flash-preview',
-      config: {
-        systemInstruction: 'You are a helpful travel assistant for a site called PrimePlaces. You help users find the best places to visit in various locations.',
-      },
-    });
-    
-    const response = await chat.sendMessage({ message });
-    
-    res.json({ reply: response.text });
-  } catch (error: any) {
-    console.error('Error in chat:', error);
-    if (error.message?.includes('API key not valid')) {
-      return res.status(400).json({ error: 'Invalid API key. Please set a valid GEMINI_API_KEY in your .env file.' });
-    }
-    res.status(500).json({ error: 'Failed to process chat' });
-  }
-});
-
-// Image Generation Endpoint
-app.post('/api/ai/image', async (req, res) => {
-  try {
-    const apiKey = getGeminiApiKey();
-    if (!apiKey) {
-      return res.status(400).json({ error: 'GEMINI_API_KEY is not configured. Add one to enable image generation.' });
-    }
-
-    const prompt = (typeof req.body.prompt === 'string' ? req.body.prompt : '').substring(0, 500);
-    const size = req.body.size;
-    if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
-    const cacheKey = `ai-image-${prompt}-${size || '1K'}`;
-    const cached = getCache(cacheKey);
-    if (cached) return res.json({ imageUrl: cached });
-
-    const ai = new GoogleGenAI({ apiKey });
-    
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: {
-        parts: [{ text: prompt }],
-      },
-      config: {
-        imageConfig: {
-          aspectRatio: "16:9",
-        },
-      },
-    });
-    
-    let imageUrl = null;
-    for (const part of response.candidates[0].content.parts) {
-      if (part.inlineData) {
-        imageUrl = `data:image/png;base64,${part.inlineData.data}`;
-        break;
-      }
-    }
-    
-    if (imageUrl) {
-      setCache(cacheKey, imageUrl);
-    }
-    
-    res.json({ imageUrl });
-  } catch (error: any) {
-    console.error('Error generating image:', error);
-    if (error.message?.includes('API key not valid')) {
-      return res.status(400).json({ error: 'Invalid API key. Please set a valid GEMINI_API_KEY in your .env file.' });
-    }
-    res.status(500).json({ error: 'Failed to generate image' });
-  }
-});
-
 // Vite middleware setup
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
@@ -655,7 +612,13 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static('dist'));
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      if (req.path.startsWith('/api/')) {
+        return res.status(404).json({ error: 'Not found' });
+      }
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
   }
 
   app.listen(PORT, '0.0.0.0', () => {
