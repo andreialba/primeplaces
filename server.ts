@@ -14,8 +14,28 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 3000;
+const isProduction = process.env.NODE_ENV === 'production';
 
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: isProduction
+    ? {
+        directives: {
+          defaultSrc: ["'self'"],
+          baseUri: ["'self'"],
+          fontSrc: ["'self'", 'https:', 'data:'],
+          formAction: ["'self'"],
+          frameAncestors: ["'self'"],
+          imgSrc: ["'self'", 'data:', 'https:'],
+          objectSrc: ["'none'"],
+          scriptSrc: ["'self'"],
+          scriptSrcAttr: ["'none'"],
+          styleSrc: ["'self'", 'https:', "'unsafe-inline'"],
+          connectSrc: ["'self'", 'https:'],
+          upgradeInsecureRequests: [],
+        },
+      }
+    : false,
+}));
 app.use(cors({
   origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000', 'http://localhost:5173'],
   methods: ['GET', 'POST'],
